@@ -1,90 +1,70 @@
-name: Deploy to Docker Hub
+name: Docker Image CI
 
 on:
-  workflow_dispatch:
-  # Build and deploy the image on pushes to master branch
   push:
-    branches: 
-      - master
-      - main
+    branches: [ master ]
+    # Publish semver tags as releases.
+    tags: [ 'v*.*.*' ]
+  pull_request:
+    branches: [ "master" ]
 
-  # Build and deploy the image nightly (to ensure we pick up any security updates)
-  schedule:
-    - cron: "0 0 * * *"
+env:
+  # Use docker.io for Docker Hub if empty
+  REGISTRY: ghcr.io
+  # github.repository as <account>/<repo>
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  deploy_dockerhub_single_arch:
-    name: Deploy to DockerHub
+  build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        docker-platform:
-          - linux/amd64
+    permissions:
+      contents: read
+      packages: write
+      # This is used to complete the identity challenge
+      # with sigstore/fulcio when running outside of PRs.
+      id-token: write
 
-    # Set job-wide environment variables
-    #  - REPO: repo name on dockerhub
-    #  - IMAGE: image name on dockerhub
-    env:
-      REPO: mikenye
-      IMAGE: picard
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      # Check out our code
-      -
-        name: Checkout
-        uses: actions/checkout@v2
+      # Set up BuildKit Docker container builder to be able to build
+      # multi-platform images and export cache
+      # https://github.com/docker/setup-buildx-action
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.0.0
 
-      # Hit an issue where arm builds would fail with cURL errors regarding intermediary certificates when downloading from github (ie: deploy-s6-overlay).
-      # After many hours of troubleshooting, the workaround is to pre-load the image's rootfs with the CA certificates from the runner.
-      # This problem may go away in future.
-      - 
-        name: Copy CA Certificates from GitHub Runner to Image rootfs
-        run: |
-          ls -la /etc/ssl/certs/
-          mkdir -p ./rootfs/etc/ssl/certs
-          mkdir -p ./rootfs/usr/share/ca-certificates/mozilla
-          cp --no-dereference /etc/ssl/certs/*.crt ./rootfs/etc/ssl/certs
-          cp --no-dereference /etc/ssl/certs/*.pem ./rootfs/etc/ssl/certs
-          cp --no-dereference /usr/share/ca-certificates/mozilla/*.crt ./rootfs/usr/share/ca-certificates/mozilla
-      
-      # # Set up QEMU for multi-arch builds
-      # -
-      #   name: Set up QEMU
-      #   uses: docker/setup-qemu-action@v1
-
-      # Log into docker hub (so we can push images)
-      -
-        name: Login to DockerHub
-        uses: docker/login-action@v1
+      # Login against a Docker registry except on PR
+      # https://github.com/docker/login-action
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v3.0.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Set up buildx
-      -
-        name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v1
+      # Extract metadata (tags, labels) for Docker
+      # https://github.com/docker/metadata-action
+      - name: Get Tags
+        id: meta
+        uses: docker/metadata-action@v5.0.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # set latest tag for default branch
+            type=raw,enable={{is_default_branch}},value=latest
+            type=schedule,pattern={{date 'YYYY-MM-DD'}}
+            type=ref,enable=true,priority=600,prefix=pr-,suffix=,event=pr
 
-      # Build "latest"
-      - 
-        name: Build & Push - latest
-        run: docker buildx build --no-cache --push --progress plain -t "${{ env.REPO }}/${{ env.IMAGE }}:latest" --compress --platform "${{ matrix.docker-platform }}" .
-
-      # Get version from "latest"
-      -
-        name: Get latest image version
-        run: |
-          docker pull "${{ env.REPO }}/${{ env.IMAGE }}:latest"
-          echo "VERSION_TAG=$(docker run --rm --entrypoint cat "${{ env.REPO }}/${{ env.IMAGE }}:latest" /CONTAINER_VERSION)" >> $GITHUB_ENV
-
-      # Show version from "latest"
-      -
-        name: Show latest image version
-        run: |
-          echo "${{ env.REPO }}/${{ env.IMAGE }}:latest contains version: ${{ env.VERSION_TAG }}"
-
-      # Build version specific
-      - 
-        name: Build & Push - version specific
-        run: docker buildx build --push --progress plain -t "${{ env.REPO }}/${{ env.IMAGE }}:${{ env.VERSION_TAG }}" --compress --platform "${{ matrix.docker-platform }}" .
+      # Build and push Docker image with Buildx
+      # https://github.com/docker/build-push-action
+      - name: Build and push Docker image
+        id: build-and-push
+        uses: docker/build-push-action@v5.0.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
