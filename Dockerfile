@@ -7,7 +7,7 @@ RUN set -x && \
     pushd /src/trivy/cmd/trivy && \
     go build
 
-FROM docker.io/jlesage/baseimage-gui:ubuntu-22.04-v4
+FROM ghcr.io/linuxserver/baseimage-kasmvnc:debianbookworm
 
 ENV CHROMIUM_FLAGS="--no-sandbox" \
     URL_PICARD_REPO="https://github.com/metabrainz/picard.git" \
