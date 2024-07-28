@@ -1,12 +1,3 @@
-FROM docker.io/golang:1.21.3 AS trivy_builder
-
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-
-RUN set -x && \
-    git clone --depth=1 https://github.com/aquasecurity/trivy /src/trivy && \
-    pushd /src/trivy/cmd/trivy && \
-    go build
-
 FROM ghcr.io/linuxserver/baseimage-kasmvnc:ubuntujammy
 
 ENV CHROMIUM_FLAGS="--no-sandbox" \
@@ -17,7 +8,6 @@ ENV CHROMIUM_FLAGS="--no-sandbox" \
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 COPY rootfs/ /
-COPY --from=trivy_builder /src/trivy/cmd/trivy/trivy /src/trivy
 
 RUN set -x && \
     # Define package arrays
@@ -99,8 +89,6 @@ RUN set -x && \
     KEPT_PACKAGES+=(mp3gain) && \
     # Install window compositor
     KEPT_PACKAGES+=(openbox) && \
-    # Security updates / fix for issue #37 (https://github.com/mikenye/docker-picard/issues/37)
-    TEMP_PACKAGES+=(jq) && \
     # Install packages
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -197,9 +185,6 @@ RUN set -x && \
       -O /etc/cont-init.d/54-check-optical-drive.sh \
       && \
     chmod +x /etc/cont-init.d/54-check-optical-drive.sh && \
-    # Security updates / fix for issue #37 (https://github.com/mikenye/docker-picard/issues/37)    
-    /src/trivy --cache-dir /tmp/trivy fs --vuln-type os -f json --ignore-unfixed --no-progress -o /tmp/trivy.out / && \
-    apt-get install -y --no-install-recommends $(jq .[].Vulnerabilities < /tmp/trivy.out | grep '"PkgName":' | tr -s ' ' | cut -d ':' -f 2 | tr -d ' ",' | uniq) && \
     # Install streaming_extractor_music
     wget \
       -O /tmp/essentia-extractor-linux-x86_64.tar.gz \
